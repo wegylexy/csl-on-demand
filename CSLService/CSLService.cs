@@ -501,4 +501,94 @@ public class CSLService : IHostedService
             _aircraft.Count is > 0 and var ac ? _aircraft[_random.Next(ac)] :
             null;
     }
+
+    internal async Task<MultipartContent> CreateMultipartContentAsync(Package package)
+    {
+        MultipartContent mc = new();
+        {
+            HashSet<string> s = new();
+            void T(string path)
+            {
+                if (s.Add(path))
+                {
+                    mc.Add(new StreamContent(File.OpenRead(Path.Join(_resources, "CSL", path)))
+                    {
+                        Headers =
+                        {
+                            ContentType = new(Path.GetExtension(path).ToLowerInvariant() switch
+                            {
+                                ".dds" => "image/vnd.ms-dds",
+                                ".png" => "image/png",
+                                _ => "application/octet-stream"
+                            }),
+                            ContentDisposition = new("attachment")
+                            {
+                                FileName = path.Replace('\\', '/')
+                            }
+                        }
+                    });
+                }
+            }
+            foreach (var a in package.Obj8Aircraft)
+            {
+                foreach (var o in a.Obj8s)
+                {
+                    var p = Path.Join(_packages[o.Package].Root, o.Path);
+                    if (s.Add(p))
+                    {
+                        var d = Path.GetDirectoryName(p);
+                        StringBuilder sb = new();
+                        using var file = File.OpenRead(Path.Join(_resources, "CSL", p));
+                        using StreamReader reader = new(file, Encoding.ASCII);
+                        while (!reader.EndOfStream)
+                        {
+                            var line = await reader.ReadLineAsync();
+                            if (line is { Length: > 8 } && line.AsSpan(0, 7).SequenceEqual("TEXTURE"))
+                            {
+                                if (line is { Length: > 12 } && line.AsSpan(7, 4).SequenceEqual("_LIT"))
+                                {
+                                    var t = o.Texture ?? line.AsSpan(12).Trim().ToString();
+                                    T(Path.Join(d, t));
+                                    sb.Append("TEXTURE_LIT ");
+                                    sb.AppendLine(t);
+                                }
+                                else
+                                {
+                                    var t = o.TextureLit ?? line.AsSpan(8).Trim().ToString();
+                                    T(Path.Join(d, t));
+                                    sb.Append("TEXTURE ");
+                                    sb.AppendLine(t);
+                                }
+                            }
+                            else
+                            {
+                                sb.AppendLine(line);
+                            }
+                        }
+                        mc.Add(new StringContent(sb.ToString(), Encoding.ASCII, "text/plain")
+                        {
+                            Headers =
+                        {
+                            ContentDisposition = new("attachment")
+                            {
+                                FileName = p.Replace('\\', '/')
+                            }
+                        }
+                        });
+                    }
+                }
+            }
+        }
+        mc.Add(new StringContent(package.ToXsbAircraft().ToString(), Encoding.ASCII, "text/plain")
+        {
+            Headers =
+            {
+                ContentDisposition = new("attachment")
+                {
+                    FileName = $"{package.Root}/xsb_aircraft.txt"
+                }
+            }
+        });
+        return mc;
+    }
 }
