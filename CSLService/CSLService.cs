@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -17,7 +18,7 @@ internal sealed record Obj8(string Package, string Path, string? Texture = null,
 
 internal sealed record Selector(string Icao, string? Operator = null, string? Livery = null);
 
-internal sealed record Obj8Aircraft(string Id)
+internal sealed record Obj8Aircraft(string Root, string Id)
 {
     public ISet<Obj8> Obj8s { get; init; } = new HashSet<Obj8>();
     public float? VertOffset { get; set; }
@@ -25,7 +26,7 @@ internal sealed record Obj8Aircraft(string Id)
 
     public ISet<string> Dependencies => Obj8s.Select(o => o.Package).ToHashSet();
 
-    public Package Pack(string root) => new(root)
+    public Package Pack() => new(Root)
     {
         ExportNames = Dependencies,
         Obj8Aircraft = { this }
@@ -154,6 +155,7 @@ internal sealed record Package(string Root)
 
 public class CSLServiceOptions
 {
+    [Required]
     public string? Root { get; set; }
 }
 
@@ -167,7 +169,7 @@ public class CSLService : IHostedService
 
     internal readonly ConcurrentDictionary<string, Aircraft> _doc8643 = new();
 
-    internal IList<Obj8Aircraft> _aircraft = Array.Empty<Obj8Aircraft>();
+    internal IDictionary<string, Obj8Aircraft> _aircraft = new Dictionary<string, Obj8Aircraft>();
 
     readonly string _resources;
 
@@ -192,6 +194,11 @@ public class CSLService : IHostedService
     static readonly Action<ILogger, int, string, Exception?> _relatedSingleWarning =
         LoggerMessage.Define<int, string>(LogLevel.Warning, 3, "Unrelated type on line {LineNumber} ({Type})");
 
+    private void LogDuplicatedError(string root, string id) =>
+        _duplicatedError(_logger, root, id, null);
+    static readonly Action<ILogger, string, string, Exception?> _duplicatedError =
+        LoggerMessage.Define<string, string>(LogLevel.Error, 4, "Duplicated {Root}/{Id}");
+
     public async Task CachePackagesAsync(CancellationToken cancellationToken = default)
     {
         await foreach (var p in EnumeratePackagesAsync(Path.Join(_resources, "CSL"), cancellationToken: cancellationToken))
@@ -205,7 +212,15 @@ public class CSLService : IHostedService
                 });
             }
         }
-        _aircraft = _packages.Values.Distinct().SelectMany(p => p.Obj8Aircraft).ToList();
+        Dictionary<string, Obj8Aircraft> d = new();
+        foreach (var a in _packages.Values.Distinct().SelectMany(p => p.Obj8Aircraft))
+        {
+            if (!d.TryAdd($"{a.Root}/{a.Id}", a))
+            {
+                LogDuplicatedError(a.Root, a.Id);
+            }
+        }
+        _aircraft = d;
     }
 
     public async Task CacheRelatedAsync(CancellationToken cancellationToken = default)
@@ -236,6 +251,7 @@ public class CSLService : IHostedService
     {
         _packages.Clear();
         _doc8643.Clear();
+        _aircraft.Clear();
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -333,7 +349,7 @@ public class CSLService : IHostedService
                                 Add();
                                 if (values.Count == 1)
                                 {
-                                    aircraft = new(values[0].Value);
+                                    aircraft = new(package.Root, values[0].Value);
                                     continue;
                                 }
                                 break;
@@ -423,9 +439,8 @@ public class CSLService : IHostedService
         }
     }
 
-    internal Obj8Aircraft? Match(string? icao = null, string? airline = null, string? livery = null)
+    internal Obj8Aircraft? MatchCore(string? icao = null, string? airline = null, string? livery = null)
     {
-        // TODO: respond from cache
         Aircraft? aircraft = null;
         if (icao != null)
         {
@@ -433,7 +448,7 @@ public class CSLService : IHostedService
         }
         int bestQuality = 0b1111111111;
         List<Obj8Aircraft> best = new();
-        foreach (var a in _aircraft)
+        foreach (var a in _aircraft.Values)
         {
             foreach (var m in a.Matches)
             {
@@ -498,7 +513,7 @@ public class CSLService : IHostedService
             }
         }
         return best.Count is > 0 and var bc ? best[_random.Next(bc)] :
-            _aircraft.Count is > 0 and var ac ? _aircraft[_random.Next(ac)] :
+            _aircraft is { Count: > 0 and var ac, Values: var v } ? v.ElementAt(_random.Next(ac)) :
             null;
     }
 
@@ -511,7 +526,9 @@ public class CSLService : IHostedService
             {
                 if (s.Add(path))
                 {
-                    mc.Add(new StreamContent(File.OpenRead(Path.Join(_resources, "CSL", path)))
+                    var p = Path.Join(_resources, "CSL", path);
+                    FileInfo i = new(p);
+                    mc.Add(new StreamContent(File.OpenRead(p))
                     {
                         Headers =
                         {
@@ -524,7 +541,9 @@ public class CSLService : IHostedService
                             ContentDisposition = new("attachment")
                             {
                                 FileName = path.Replace('\\', '/')
-                            }
+                            },
+                            ContentLength = i.Length,
+                            LastModified = i.LastWriteTimeUtc
                         }
                     });
                 }
@@ -568,12 +587,12 @@ public class CSLService : IHostedService
                         mc.Add(new StringContent(sb.ToString(), Encoding.ASCII, "text/plain")
                         {
                             Headers =
-                        {
-                            ContentDisposition = new("attachment")
                             {
-                                FileName = p.Replace('\\', '/')
+                                ContentDisposition = new("attachment")
+                                {
+                                    FileName = p.Replace('\\', '/')
+                                }
                             }
-                        }
                         });
                     }
                 }
@@ -591,4 +610,12 @@ public class CSLService : IHostedService
         });
         return mc;
     }
+
+    public Task<MultipartContent> CreateMultipartContentAsync(string root, string id) =>
+        CreateMultipartContentAsync(_aircraft[$"{root}/{id}"].Pack());
+
+    public (string Root, string Id)? Match(string? icao = null, string? airline = null, string? livery = null) =>
+        MatchCore(icao, airline, livery) is not null and var a ?
+            (a.Root, a.Id) :
+            null;
 }

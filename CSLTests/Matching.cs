@@ -7,46 +7,6 @@ namespace FlyByWireless.CSLOnDemand;
 
 public class Matching
 {
-    static readonly string _resources = Environment.GetEnvironmentVariable("CSL_Resources")!;
-
-    class TestLogger : ILogger
-    {
-        readonly string _category;
-        readonly ITestOutputHelper _output;
-
-        public TestLogger(string category, ITestOutputHelper output)
-        {
-            _category = category;
-            _output = output;
-        }
-
-        public IDisposable BeginScope<TState>(TState state) => null!;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            if (IsEnabled(logLevel))
-            {
-                _output.WriteLine("[{0}] {1}: {2}", _category, logLevel, formatter(state, exception));
-                if (exception != null)
-                {
-                    _output.WriteLine(exception.ToString());
-                }
-            }
-        }
-    }
-
-    class TestLoggerProvider : ILoggerProvider
-    {
-        readonly ITestOutputHelper _output;
-
-        public TestLoggerProvider(ITestOutputHelper output) => _output = output;
-
-        public ILogger CreateLogger(string categoryName) => new TestLogger(categoryName, _output);
-
-        public void Dispose() { }
-    }
 
     readonly ITestOutputHelper _output;
 
@@ -63,7 +23,7 @@ public class Matching
             }).CreateLogger<CSLService>(),
             Options.Create(new CSLServiceOptions
             {
-                Root = _resources
+                Root = Constants.Resources
             })
         );
     }
@@ -114,7 +74,7 @@ public class Matching
         {
             await _service.CachePackagesAsync();
         }
-        var aircraft = _service.Match(icao, airline, livery)!;
+        var aircraft = _service.MatchCore(icao, airline, livery)!;
         Assert.NotNull(aircraft);
         if (icao != null)
         {
@@ -135,28 +95,8 @@ public class Matching
         }
         var package = aircraft.Dependencies.Select(d => _service._packages[d]).Single();
         _output.WriteLine($"Matched: {aircraft.Id} in {package.Root}");
-        using var content = await _service.CreateMultipartContentAsync(aircraft.Pack(package.Root));
-        foreach (var c in content)
-        {
-            _output.WriteLine("--");
-            foreach (var h in c.Headers)
-            {
-                foreach (var v in h.Value)
-                {
-                    _output.WriteLine($"{h.Key}: {v}");
-                }
-            }
-            _output.WriteLine(string.Empty);
-            if (c.Headers.ContentType?.MediaType?.StartsWith("text/") is true)
-            {
-                var t = await c.ReadAsStringAsync();
-                _output.WriteLine(t.Length > 256 ? $"({t.Length:#,##0} characters)" : t);
-            }
-            else
-            {
-                _output.WriteLine($"({(await c.ReadAsStreamAsync()).Length:#,##0} bytes)");
-            }
-        }
-        _output.WriteLine("----");
+        _output.WriteLine(string.Empty);
+        using var content = await _service.CreateMultipartContentAsync(aircraft.Pack());
+        await content.LogAsync(_output);
     }
 }
