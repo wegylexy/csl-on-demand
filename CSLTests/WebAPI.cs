@@ -1,5 +1,7 @@
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,7 +29,16 @@ public class WebAPI : IDisposable
                 builder.ClearProviders().AddProvider(new TestLoggerProvider(output));
             }).ConfigureServices(services =>
             {
-                services.AddRouting();
+                services.AddRouting().AddResponseCompression(options =>
+                {
+                    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+                    {
+                        "multipart/mixed"
+                    });
+                });
+            }).Configure(app =>
+            {
+                app.UseResponseCompression();
             }).ConfigureCSLOnDemand("/csl", options =>
             {
                 options.Root = Constants.Resources;
@@ -74,6 +85,7 @@ public class WebAPI : IDisposable
     public async Task PackAsync(string root, string id)
     {
         using var hc = _host.GetTestClient();
+        hc.DefaultRequestHeaders.AcceptEncoding.Add(new("br", 1));
         using var r = await hc.GetAsync($"/csl/pack/{root}/{id}");
         r.EnsureSuccessStatusCode();
         var t = r.Content.Headers.ContentType!;
