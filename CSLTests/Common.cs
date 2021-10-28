@@ -67,7 +67,11 @@ static class Extensions
             {
                 output.WriteLine($"Modified: {DateTime.Parse(m.Single()):yyyy-MM-dd'T'HH:mm:ss'Z'}");
             }
-            if (new MediaType(section.ContentType!).Type == "text")
+            if (section.Headers!.TryGetValue("Content-Location", out var cls))
+            {
+                output.WriteLine($"Location: " + cls.Single());
+            }
+            else if (new MediaType(section.ContentType!).Type == "text")
             {
                 var t = await section.ReadAsStringAsync();
                 output.WriteLine(t.Length > 256 ? $"({t.Length:#,##0} characters)" : t);

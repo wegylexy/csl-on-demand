@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.ComponentModel.DataAnnotations;
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -157,11 +158,21 @@ public class CSLServiceOptions
 {
     [Required]
     public string? Root { get; set; }
+
+    public bool RedirectTextures { get; set; } = true;
 }
 
 public class CSLService : IHostedService
 {
-    static private Random _random = new();
+    static private readonly Random _random = new();
+
+    static public MediaTypeHeaderValue GetMediaType(string path)
+    => new(Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".dds" => "image/vnd.ms-dds",
+        ".png" => "image/png",
+        _ => "application/octet-stream"
+    });
 
     private readonly ILogger<CSLService> _logger;
 
@@ -517,7 +528,7 @@ public class CSLService : IHostedService
             null;
     }
 
-    internal async Task<MultipartContent> CreateMultipartContentAsync(Package package)
+    internal async Task<MultipartContent> CreateMultipartContentAsync(Package package, Uri? textureBase = null, CancellationToken cancellationToken = default)
     {
         MultipartContent mc = new();
         {
@@ -526,26 +537,38 @@ public class CSLService : IHostedService
             {
                 if (s.Add(path))
                 {
-                    var p = Path.Join(_resources, "CSL", path);
-                    FileInfo i = new(p);
-                    mc.Add(new StreamContent(File.OpenRead(p))
+                    MediaTypeHeaderValue type = GetMediaType(path);
+                    ContentDispositionHeaderValue disposition = new("inline")
                     {
-                        Headers =
+                        FileName = path.Replace('\\', '/')
+                    };
+                    if (textureBase == null)
+                    {
+                        var p = Path.Join(_resources, "CSL", path);
+                        FileInfo i = new(p);
+                        mc.Add(new StreamContent(File.OpenRead(p))
                         {
-                            ContentType = new(Path.GetExtension(path).ToLowerInvariant() switch
+                            Headers =
                             {
-                                ".dds" => "image/vnd.ms-dds",
-                                ".png" => "image/png",
-                                _ => "application/octet-stream"
-                            }),
-                            ContentDisposition = new("attachment")
+                                ContentType = type,
+                                ContentDisposition = disposition,
+                                ContentLength = i.Length,
+                                LastModified = i.LastWriteTimeUtc
+                            }
+                        });
+                    }
+                    else
+                    {
+                        mc.Add(new ByteArrayContent(Array.Empty<byte>())
+                        {
+                            Headers =
                             {
-                                FileName = path.Replace('\\', '/')
-                            },
-                            ContentLength = i.Length,
-                            LastModified = i.LastWriteTimeUtc
-                        }
-                    });
+                                ContentType = type,
+                                ContentDisposition = disposition,
+                                ContentLocation = new(textureBase, path)
+                            }
+                        });
+                    }
                 }
             }
             foreach (var a in package.Obj8Aircraft)
@@ -561,7 +584,7 @@ public class CSLService : IHostedService
                         using StreamReader reader = new(file, Encoding.ASCII);
                         while (!reader.EndOfStream)
                         {
-                            var line = await reader.ReadLineAsync();
+                            var line = await reader.ReadLineAsync().WaitAsync(cancellationToken);
                             if (line is { Length: > 8 } && line.AsSpan(0, 7).SequenceEqual("TEXTURE"))
                             {
                                 if (line is { Length: > 12 } && line.AsSpan(7, 4).SequenceEqual("_LIT"))
@@ -588,7 +611,7 @@ public class CSLService : IHostedService
                         {
                             Headers =
                             {
-                                ContentDisposition = new("attachment")
+                                ContentDisposition = new("inline")
                                 {
                                     FileName = p.Replace('\\', '/')
                                 }
@@ -611,8 +634,8 @@ public class CSLService : IHostedService
         return mc;
     }
 
-    public Task<MultipartContent> CreateMultipartContentAsync(string root, string id) =>
-        CreateMultipartContentAsync(_aircraft[$"{root}/{id}"].Pack());
+    public Task<MultipartContent> CreateMultipartContentAsync(string root, string id, Uri? textureBase = null, CancellationToken cancellationToken = default) =>
+        CreateMultipartContentAsync(_aircraft[$"{root}/{id}"].Pack(), textureBase, cancellationToken);
 
     public (string Root, string Id)? Match(string? icao = null, string? airline = null, string? livery = null) =>
         MatchCore(icao, airline, livery) is not null and var a ?

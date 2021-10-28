@@ -1,4 +1,6 @@
 ﻿using FlyByWireless.CSLOnDemand;
+using Microsoft.Extensions.Options;
+using System.Net.Http.Headers;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -22,6 +24,7 @@ namespace Microsoft.Extensions.DependencyInjection
         static public IApplicationBuilder MapCSLOnDemand(this IApplicationBuilder app, PathString pathMatch)
         => app.Map(pathMatch, app => app.UseRouting().UseEndpoints(endpoints =>
         {
+            var options = endpoints.ServiceProvider.GetRequiredService<IOptions<CSLServiceOptions>>().Value;
             var csl = endpoints.ServiceProvider.GetRequiredService<CSLService>();
             endpoints.MapGet("match", context =>
             {
@@ -39,15 +42,48 @@ namespace Microsoft.Extensions.DependencyInjection
             });
             endpoints.MapGet("pack/{root:required}/{id:required}", async context =>
             {
-                var rv = context.Request.RouteValues;
-                using var content = await csl.CreateMultipartContentAsync(rv["root"]!.ToString()!, rv["id"]!.ToString()!);
+                var request = context.Request;
+                var rv = request.RouteValues;
+                var root = rv["root"]!.ToString()!;
+                var id = rv["id"]!.ToString()!;
+                using var content = await csl.CreateMultipartContentAsync(root, id,
+                    options.RedirectTextures ? new($"{request.Scheme}://{request.Host}{request.PathBase}/") : null,
+                    context.RequestAborted
+                );
+                content.Headers.ContentDisposition = new("attachment")
+                {
+                    FileName = $"{root}/{id}.csl"
+                };
                 var response = context.Response;
                 foreach (var h in content.Headers)
                 {
                     response.Headers.Add(h.Key, h.Value.ToArray());
                 }
-                await (await content.ReadAsStreamAsync()).CopyToAsync(response.Body);
+                await (await content.ReadAsStreamAsync()).CopyToAsync(response.Body, context.RequestAborted);
             });
+            if (options.RedirectTextures)
+            {
+                endpoints.MapGet("{*path:file}", async context =>
+                {
+                    var n = context.Request.Path.Value!.TrimStart('/');
+                    var p = Path.Join(options.Root, "CSL", n);
+                    var response = context.Response;
+                    if (new FileInfo(p) is { Exists: true } and var i)
+                    {
+                        response.Headers.ContentType = new(CSLService.GetMediaType(n).ToString());
+                        response.Headers.ContentDisposition = new(new ContentDispositionHeaderValue("attachment")
+                        {
+                            FileName = n,
+                            ModificationDate = i.LastWriteTimeUtc
+                        }.ToString());
+                        await response.SendFileAsync(p, context.RequestAborted);
+                    }
+                    else
+                    {
+                        response.StatusCode = 404;
+                    }
+                });
+            }
         }));
     }
 }

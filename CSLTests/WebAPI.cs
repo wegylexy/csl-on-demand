@@ -94,4 +94,16 @@ public class WebAPI : IDisposable
         var reader = new MultipartReader(t.GetBoundary(), s);
         await reader.LogAsync(_output);
     }
+
+    [Theory]
+    [InlineData("C172/C172prop.png")]
+    public async Task IndividualAsync(string path)
+    {
+        using var hc = _host.GetTestClient();
+        hc.DefaultRequestHeaders.AcceptEncoding.Add(new("br", 1));
+        using var r = await hc.GetAsync($"/csl/{path}");
+        r.EnsureSuccessStatusCode();
+        var t = r.Content.Headers.ContentType!;
+        Assert.StartsWith("image/", t.MediaType);
+    }
 }
